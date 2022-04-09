@@ -9,6 +9,7 @@ import os
 import copy
 from vae import *
 from torch.multiprocessing import set_sharing_strategy
+import torchvision
 import wandb
 set_sharing_strategy("file_system")
 
@@ -118,7 +119,7 @@ class Trainer(object):
             img1, _, _, lam, mix_index = mixup_data(img1, labels, 1.)
 
             img_adv, gx = gen_adv(self.model, self.vae, img2, self.criterion, self.args)
-            optimizer.zero_grad()
+            self.optimizer.zero_grad()
             z_i = self.model(img1)
             z_j = self.model(img2)
             z_adv = self.model(img_adv, adv=True)
