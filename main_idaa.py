@@ -9,6 +9,7 @@ import os
 import copy
 from vae import *
 from torch.multiprocessing import set_sharing_strategy
+import wandb
 set_sharing_strategy("file_system")
 
 
@@ -38,18 +39,18 @@ def gen_adv(model, vae, x_i, criterion, args):
     return x_j_adv, gx
 
 
-def reconst_images(x_i, gx, x_j_adv):
+def reconst_images(x_i, gx, x_j_adv, run):
     grid_X = torchvision.utils.make_grid(x_i[:16].data, nrow=8, padding=2, normalize=True)
-    wandb.log({"X.jpg": [wandb.Image(grid_X)]}, commit=False)
+    run.log({"X.jpg": [wandb.Image(grid_X)]}, commit=False)
     grid_GX = torchvision.utils.make_grid(gx[:16].data, nrow=8, padding=2, normalize=True)
-    wandb.log({"GX.jpg": [wandb.Image(grid_GX)]}, commit=False)
+    run.log({"GX.jpg": [wandb.Image(grid_GX)]}, commit=False)
     grid_RX = torchvision.utils.make_grid((x_i[:16] - gx[:16]).data, nrow=8, padding=2, normalize=True)
-    wandb.log({"RX.jpg": [wandb.Image(grid_RX)]}, commit=False)
+    run.log({"RX.jpg": [wandb.Image(grid_RX)]}, commit=False)
     grid_AdvX = torchvision.utils.make_grid(x_j_adv[:16].data, nrow=8, padding=2, normalize=True)
-    wandb.log({"AdvX.jpg": [wandb.Image(grid_AdvX)]}, commit=False)
+    run.log({"AdvX.jpg": [wandb.Image(grid_AdvX)]}, commit=False)
     grid_delta = torchvision.utils.make_grid((x_j_adv - x_i)[:16].data, nrow=8, padding=2, normalize=True)
-    wandb.log({"Delta.jpg": [wandb.Image(grid_delta)]}, commit=False)
-    wandb.log({'l2_norm': torch.mean((x_j_adv - x_i).reshape(x_i.shape[0], -1).norm(dim=1)),
+    run.log({"Delta.jpg": [wandb.Image(grid_delta)]}, commit=False)
+    run.log({'l2_norm': torch.mean((x_j_adv - x_i).reshape(x_i.shape[0], -1).norm(dim=1)),
                'linf_norm': torch.mean((x_j_adv - x_i).reshape(x_i.shape[0], -1).abs().max(dim=1)[0])
                }, commit=False)
 
@@ -93,6 +94,7 @@ class Trainer(object):
         self.best_epoch = 0
         self.acc = []
         self.train_acc = []
+        self.wandb = wandb.init(config=args)
 
         
     def train(self, epoch):
@@ -131,7 +133,7 @@ class Trainer(object):
             loss.backward()
             self.optimizer.step()
             self.optimizer.zero_grad()
-        reconst_images(img2, gx, img_adv)
+        reconst_images(img2, gx, img_adv, self.wandb)
         self.scheduler.step()
         print("Epoch: {0}".format(epoch))
         torch.save({'best':self.best, 'epoch':self.epoch, 'net':self.model.state_dict()}, os.path.join(self.args.save_dir, "last_model.pth.tar"))
@@ -250,6 +252,7 @@ def main():
     parser.add_argument("--proj-size", default=128, type=int)
     parser.add_argument("--no-eval", default=False, action='store_true')
 
+    parser.add_argument('--dim', default=512, type=int, help='CNN_embed_dim')
     parser.add_argument('--adv', default=False, action='store_true', help='adversarial exmaple')
     parser.add_argument('--eps', default=0.01, type=float, help='eps for adversarial')
     parser.add_argument('--bn_adv_momentum', default=0.01, type=float, help='batch norm momentum for advprop')
