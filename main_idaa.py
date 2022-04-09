@@ -253,7 +253,8 @@ def main():
     parser.add_argument('--adv', default=False, action='store_true', help='adversarial exmaple')
     parser.add_argument('--eps', default=0.01, type=float, help='eps for adversarial')
     parser.add_argument('--bn_adv_momentum', default=0.01, type=float, help='batch norm momentum for advprop')
-
+    parser.add_argument('--vae_path', default='../results/vae_dim512_kl0.1_simclr/model_epoch92.pth',
+                        type=str, help='vae_path')
     args = parser.parse_args()
     #For reproducibility purposes
     torch.backends.cudnn.deterministic = True
