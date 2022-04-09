@@ -43,6 +43,7 @@ class Trainer(object):
         self.acc = []
         self.train_acc = []
 
+        
     def train(self, epoch):
         running_loss = 0.0
         self.model.train()
@@ -171,9 +172,9 @@ class Trainer(object):
             torch.save(self.optimizer.state_dict(), os.path.join(self.args.save_dir, "best_optimizer.pth.tar"))
             
         return top1/total
-
-
+    
 def main():
+
 
     parser = argparse.ArgumentParser(description="iMix")
     parser.add_argument("--net", type=str, default="wideresnet282",
@@ -222,7 +223,6 @@ def main():
         _trainer.train(eps)
         if not args.no_eval:
             _trainer.kNN()
-
 
 if __name__ == "__main__":
    main()

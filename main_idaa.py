@@ -7,8 +7,52 @@ from tqdm import tqdm
 from utils import make_data_loader, mixup_data
 import os
 import copy
+from vae import *
 from torch.multiprocessing import set_sharing_strategy
 set_sharing_strategy("file_system")
+
+
+def gen_adv(model, vae, x_i, criterion, args):
+    x_i = x_i.detach()
+    bsz = x_i.size(0)
+    with torch.no_grad():
+        z, gx, _, _ = vae(x_i)
+        z_i = model(x_i, adv=True)
+
+    variable_bottle = Variable(z.detach(), requires_grad=True)
+    adv_gx = vae(variable_bottle, True)
+    x_j_adv = adv_gx + (x_i - gx).detach()
+    z_j_adv = model(x_j_adv, adv=True)
+
+    logits = torch.div(torch.matmul(z_i.detach(), z_j_adv.t()), 0.2)  # Contrastive temp
+    tmp_loss = criterion(logits, torch.arange(bsz).cuda())
+    tmp_loss.backward()
+
+    with torch.no_grad():
+        sign_grad = variable_bottle.grad.data.sign()
+        variable_bottle.data = variable_bottle.data + args.eps * sign_grad
+        adv_gx = vae(variable_bottle, True)
+        x_j_adv = adv_gx + (x_i - gx).detach()
+    x_j_adv.requires_grad = False
+    x_j_adv.detach()
+    return x_j_adv, gx
+
+
+def reconst_images(x_i, gx, x_j_adv):
+    grid_X = torchvision.utils.make_grid(x_i[:16].data, nrow=8, padding=2, normalize=True)
+    wandb.log({"X.jpg": [wandb.Image(grid_X)]}, commit=False)
+    grid_GX = torchvision.utils.make_grid(gx[:16].data, nrow=8, padding=2, normalize=True)
+    wandb.log({"GX.jpg": [wandb.Image(grid_GX)]}, commit=False)
+    grid_RX = torchvision.utils.make_grid((x_i[:16] - gx[:16]).data, nrow=8, padding=2, normalize=True)
+    wandb.log({"RX.jpg": [wandb.Image(grid_RX)]}, commit=False)
+    grid_AdvX = torchvision.utils.make_grid(x_j_adv[:16].data, nrow=8, padding=2, normalize=True)
+    wandb.log({"AdvX.jpg": [wandb.Image(grid_AdvX)]}, commit=False)
+    grid_delta = torchvision.utils.make_grid((x_j_adv - x_i)[:16].data, nrow=8, padding=2, normalize=True)
+    wandb.log({"Delta.jpg": [wandb.Image(grid_delta)]}, commit=False)
+    wandb.log({'l2_norm': torch.mean((x_j_adv - x_i).reshape(x_i.shape[0], -1).norm(dim=1)),
+               'linf_norm': torch.mean((x_j_adv - x_i).reshape(x_i.shape[0], -1).abs().max(dim=1)[0])
+               }, commit=False)
+
 
 class Trainer(object):
     def __init__(self, args):
@@ -16,20 +60,27 @@ class Trainer(object):
 
         if args.net == "resnet18":
             from nets.resnet import ResNet18
-            model = ResNet18(self.args.proj_size)
+            model = ResNet18(self.args.proj_size, bn_adv_flag=True,
+                                                 bn_adv_momentum=args.bn_adv_momentum)
         elif args.net == "resnet50":
             from nets.resnet import ResNet50
-            model = ResNet50(self.args.proj_size)
+            model = ResNet50(self.args.proj_size, bn_adv_flag=True,
+                                                 bn_adv_momentum=args.bn_adv_momentum)
         elif args.net == "wideresnet282":
             from nets.wideresnet import WRN28_2
-            model = WRN28_2(self.args.proj_size)
+            model = WRN28_2(self.args.proj_size, bn_adv_flag=True,
+                                                 bn_adv_momentum=args.bn_adv_momentum)
         else:
             raise NotImplementedError
-        
+        vae = CVAE_cifar_withbn(128, args.dim)
+        vae.load_state_dict(torch.load(args.vae_path))
+        vae.cuda()
+        vae.eval()
         print("Number of parameters", sum(p.numel() for p in model.parameters() if p.requires_grad))
         
         self.model = nn.DataParallel(model).cuda()
-        
+        self.vae = vae
+
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.args.lr, momentum=0.9, nesterov=True, weight_decay=1e-4)
         self.scheduler = torch.optim.lr_scheduler.MultiStepLR(self.optimizer, milestones=self.args.steps, gamma=self.args.gamma)
 
@@ -43,6 +94,7 @@ class Trainer(object):
         self.acc = []
         self.train_acc = []
 
+        
     def train(self, epoch):
         running_loss = 0.0
         self.model.train()
@@ -63,17 +115,23 @@ class Trainer(object):
             labels = torch.zeros(len(img1))
             img1, _, _, lam, mix_index = mixup_data(img1, labels, 1.)
 
+            img_adv, gx = gen_adv(self.model, self.vae, img2, self.criterion, self.args)
+            optimizer.zero_grad()
             z_i = self.model(img1)
             z_j = self.model(img2)
+            z_adv = self.model(img_adv, adv=True)
                     
             logits = torch.div(torch.matmul(z_i, z_j.t()), 0.2) #Contrastive temp
-            loss = lam * self.criterion(logits, torch.arange(bsz).cuda()) + (1 - lam) * self.criterion(logits, mix_index.cuda())
+            logits_adv = torch.div(torch.matmul(z_i, z_adv.t()), 0.2) #Contrastive temp
+            loss = lam * self.criterion(logits, torch.arange(bsz).cuda()) + (1 - lam) * self.criterion(logits, mix_index.cuda())+ \
+                   lam * self.criterion(logits_adv, torch.arange(bsz).cuda()) + (1 - lam) * self.criterion(logits_adv, mix_index.cuda())
             if i % 5 == 0:
                 tbar.set_description("Training iMix, train loss {:.2f}, lr {:.3f}".format(loss.item(), self.optimizer.param_groups[0]['lr']))
             # compute gradient and do SGD step
             loss.backward()
             self.optimizer.step()
-            self.optimizer.zero_grad() 
+            self.optimizer.zero_grad()
+        reconst_images(img2, gx, img_adv)
         self.scheduler.step()
         print("Epoch: {0}".format(epoch))
         torch.save({'best':self.best, 'epoch':self.epoch, 'net':self.model.state_dict()}, os.path.join(self.args.save_dir, "last_model.pth.tar"))
@@ -171,9 +229,9 @@ class Trainer(object):
             torch.save(self.optimizer.state_dict(), os.path.join(self.args.save_dir, "best_optimizer.pth.tar"))
             
         return top1/total
-
-
+    
 def main():
+
 
     parser = argparse.ArgumentParser(description="iMix")
     parser.add_argument("--net", type=str, default="wideresnet282",
@@ -191,6 +249,10 @@ def main():
     parser.add_argument("--resume", default=None, type=str)
     parser.add_argument("--proj-size", default=128, type=int)
     parser.add_argument("--no-eval", default=False, action='store_true')
+
+    parser.add_argument('--adv', default=False, action='store_true', help='adversarial exmaple')
+    parser.add_argument('--eps', default=0.01, type=float, help='eps for adversarial')
+    parser.add_argument('--bn_adv_momentum', default=0.01, type=float, help='batch norm momentum for advprop')
 
     args = parser.parse_args()
     #For reproducibility purposes
@@ -222,7 +284,6 @@ def main():
         _trainer.train(eps)
         if not args.no_eval:
             _trainer.kNN()
-
 
 if __name__ == "__main__":
    main()

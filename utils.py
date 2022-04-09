@@ -27,8 +27,8 @@ def make_data_loader(args, no_aug=False, transform=None, **kwargs):
         mean = [0.4914, 0.4822, 0.4465]
         std = [0.2023, 0.1994, 0.2010]
     elif args.dataset == 'cifar100':
-        mean = [0.5071, 0.4867, 0.4408]
-        std = [0.2675, 0.2565, 0.2761]
+        mean = [0.4914, 0.4822, 0.4465]
+        std = [0.2023, 0.1994, 0.2010]
     elif args.dataset == 'miniimagenet':
         mean = [0.4728, 0.4487, 0.4031]
         std = [0.2744, 0.2663 , 0.2806]
